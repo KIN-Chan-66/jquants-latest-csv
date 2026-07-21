@@ -6,18 +6,15 @@
 <title>J-Quants 株式相関分析</title>
 <style>
 body{font-family:Meiryo,sans-serif;background:#f4f6f8;margin:0;color:#1f2937}
-header{background:#173a5e;color:#fff;padding:18px 24px;font-size:24px;font-weight:bold}
+header{background:#173a5e;color:white;padding:18px 24px;font-size:24px;font-weight:bold}
 main{max-width:1000px;margin:20px auto;padding:0 16px}
-.card{background:#fff;padding:18px;border-radius:12px;margin-bottom:14px;box-shadow:0 2px 8px #0001}
+.card{background:white;padding:18px;border-radius:12px;margin-bottom:14px;box-shadow:0 2px 8px #0001}
 input,select,button{padding:10px;margin:6px;border-radius:7px;border:1px solid #bbb}
-button{background:#2563eb;color:#fff;font-weight:bold;border:0;cursor:pointer}
-button:disabled{opacity:.55}.green{background:#15803d}
-.status{background:#e2e8f0;padding:12px;border-radius:8px;margin-top:10px;line-height:1.7;white-space:pre-line}
+button{background:#2563eb;color:white;font-weight:bold;border:0;cursor:pointer}
+.green{background:#15803d}.status{background:#e2e8f0;padding:12px;border-radius:8px;margin-top:10px;white-space:pre-line}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
 .metric{background:#eef4fb;padding:14px;border-radius:8px;text-align:center}
 canvas{width:100%;height:450px;border:1px solid #ddd}
-progress{width:100%;height:18px;margin-top:10px;display:none}
-@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
@@ -26,182 +23,118 @@ progress{width:100%;height:18px;margin-top:10px;display:none}
 <div class="card">
 <h3>最新CSV</h3>
 <button id="load">最新データを再取得</button>
-<progress id="progress" max="100"></progress>
 <div id="status" class="status">最新データを自動取得します…</div>
 </div>
-
 <div class="card">
 銘柄A <input id="a" value="7203">
 銘柄B <input id="b" value="7267">
 分析期間
-<select id="period">
-<option>60</option><option selected>100</option>
-<option>250</option><option value="all">全期間</option>
-</select>
+<select id="period"><option>60</option><option selected>100</option><option>250</option><option value="all">全期間</option></select>
 <button id="analyze" class="green">相関分析</button>
 </div>
-
 <div class="card grid">
 <div class="metric">相関係数<br><b id="corr">-</b></div>
 <div class="metric">共通日数<br><b id="days">-</b></div>
 <div class="metric">最新サヤ<br><b id="spread">-</b></div>
 <div class="metric">Zスコア<br><b id="z">-</b></div>
 </div>
-
 <div class="card"><canvas id="cv" width="960" height="450"></canvas></div>
 </main>
-
 <script>
 "use strict";
 let csvText="";
 const $=id=>document.getElementById(id);
 
-async function loadLatest(){
-  $("load").disabled=true;
-  $("progress").style.display="block";
-  $("progress").removeAttribute("value");
-  $("status").textContent="圧縮された最新CSVを取得しています…";
-
-  try{
-    const response=await fetch(
-      "./jquants_latest.csv.gz?t="+Date.now(),
-      {cache:"no-store"}
-    );
-
-    if(!response.ok){
-      throw new Error("データ取得失敗：HTTP "+response.status);
-    }
-
-    if(!response.body){
-      throw new Error("ブラウザがデータ展開に対応していません。");
-    }
-
-    const decompressed=response.body.pipeThrough(
-      new DecompressionStream("gzip")
-    );
-
-    csvText=await new Response(decompressed).text();
-
-    const first=csvText.slice(0,csvText.indexOf("\n"));
-    if(!first.includes("Date")||!first.includes("Code")||!first.includes("AdjC")){
-      throw new Error("CSVの列が想定と異なります。");
-    }
-
-    const rows=(csvText.match(/\n/g)||[]).length;
-    $("status").textContent=
-      "最新CSVの取得が完了しました。\n"+
-      "データ行数：約"+rows.toLocaleString()+"行\n"+
-      "銘柄コードを入力して「相関分析」を押してください。";
-  }catch(e){
-    $("status").textContent=
-      "最新データの取得に失敗しました。\n"+e.message;
-  }finally{
-    $("progress").style.display="none";
-    $("load").disabled=false;
-  }
+function normalizeCode(value){
+  let code=String(value ?? "").trim().replace(/\.0$/,"");
+  if(/^\d{5}$/.test(code) && code.endsWith("0")) code=code.slice(0,4);
+  return code;
 }
 
-$("load").addEventListener("click",loadLatest);
+async function loadLatest(){
+  $("status").textContent="最新CSVを取得しています…";
+  try{
+    const r=await fetch("./jquants_latest.csv.gz?t="+Date.now(),{cache:"no-store"});
+    if(!r.ok) throw new Error("データ取得失敗 HTTP "+r.status);
+    const stream=r.body.pipeThrough(new DecompressionStream("gzip"));
+    csvText=await new Response(stream).text();
+    const count=(csvText.match(/\n/g)||[]).length;
+    $("status").textContent="最新CSVの取得が完了しました。\nデータ行数：約"+count.toLocaleString()+"行";
+  }catch(e){
+    $("status").textContent="最新データの取得に失敗しました。\n"+e.message;
+  }
+}
 
 const avg=x=>x.reduce((s,v)=>s+v,0)/x.length;
 const sd=x=>{const m=avg(x);return Math.sqrt(x.reduce((s,v)=>s+(v-m)**2,0)/x.length)};
 const cor=(x,y)=>{
   const mx=avg(x),my=avg(y);let n=0,dx=0,dy=0;
-  for(let i=0;i<x.length;i++){
-    const a=x[i]-mx,b=y[i]-my;
-    n+=a*b;dx+=a*a;dy+=b*b;
-  }
-  const d=Math.sqrt(dx*dy);
-  return d?n/d:0;
+  for(let i=0;i<x.length;i++){const a=x[i]-mx,b=y[i]-my;n+=a*b;dx+=a*a;dy+=b*b}
+  const d=Math.sqrt(dx*dy);return d?n/d:0;
 };
 
-$("analyze").addEventListener("click",()=>{
-  if(!csvText){alert("最新データの取得完了までお待ちください。");return}
+$("load").onclick=loadLatest;
 
-  const A=$("a").value.trim(),B=$("b").value.trim();
+$("analyze").onclick=()=>{
+  if(!csvText){alert("最新CSVの取得完了までお待ちください。");return}
+  const A=normalizeCode($("a").value),B=normalizeCode($("b").value);
   if(!A||!B||A===B){alert("異なる2銘柄コードを入力してください。");return}
 
-  $("status").textContent="分析しています…";
+  const lines=csvText.replace(/\r/g,"").split("\n").filter(Boolean);
+  const h=lines[0].split(",");
+  const di=h.indexOf("Date"),ci=h.indexOf("Code"),pi=h.indexOf("AdjC");
+  const ma=new Map(),mb=new Map();
 
-  setTimeout(()=>{
-    try{
-      const lines=csvText.replace(/\r/g,"").split("\n").filter(Boolean);
-      const h=lines[0].split(",");
-      const di=h.indexOf("Date"),ci=h.indexOf("Code"),pi=h.indexOf("AdjC");
-      if(di<0||ci<0||pi<0)throw new Error("CSV列を確認してください。");
+  for(let i=1;i<lines.length;i++){
+    const r=lines[i].split(",");
+    const c=normalizeCode(r[ci]);
+    const d=String(r[di]||"").slice(0,10);
+    const p=Number(r[pi]);
+    if(!d||!Number.isFinite(p)||p<=0) continue;
+    if(c===A) ma.set(d,p);
+    if(c===B) mb.set(d,p);
+  }
 
-      const ma=new Map(),mb=new Map();
+  let rows=[];
+  for(const [d,p] of ma) if(mb.has(d)) rows.push({d,a:p,b:mb.get(d)});
+  rows.sort((x,y)=>x.d.localeCompare(y.d));
+  const period=$("period").value;
+  if(period!=="all") rows=rows.slice(-Number(period));
 
-      for(let i=1;i<lines.length;i++){
-        const r=lines[i].split(",");
-        const c=String(r[ci]||"").replace(/\.0$/,"");
-        const d=String(r[di]||"").slice(0,10);
-        const p=Number(r[pi]);
+  if(rows.length<3){
+    $("status").textContent="分析に失敗しました。\n銘柄A "+A+"："+ma.size+"日\n銘柄B "+B+"："+mb.size+"日";
+    return;
+  }
 
-        if(c===A)ma.set(d,p);
-        if(c===B)mb.set(d,p);
-      }
+  rows.forEach((r,i)=>{
+    r.ia=r.a/rows[0].a*100;r.ib=r.b/rows[0].b*100;r.s=r.ia-r.ib;
+    if(i){r.ra=r.a/rows[i-1].a-1;r.rb=r.b/rows[i-1].b-1}
+  });
 
-      let rows=[];
-      for(const[d,p]of ma){
-        if(mb.has(d))rows.push({d,a:p,b:mb.get(d)});
-      }
-      rows.sort((x,y)=>x.d.localeCompare(y.d));
+  const ret=rows.slice(1),corr=cor(ret.map(r=>r.ra),ret.map(r=>r.rb));
+  const spreads=rows.map(r=>r.s),mean=avg(spreads),sigma=sd(spreads),latest=spreads.at(-1);
+  const z=sigma?(latest-mean)/sigma:0;
 
-      const period=$("period").value;
-      if(period!=="all")rows=rows.slice(-Number(period));
-      if(rows.length<3)throw new Error("共通データが不足しています。");
+  $("corr").textContent=corr.toFixed(3);
+  $("days").textContent=rows.length;
+  $("spread").textContent=latest.toFixed(2);
+  $("z").textContent=z.toFixed(2);
+  $("status").textContent="分析完了："+A+" × "+B;
 
-      rows.forEach((r,i)=>{
-        r.ia=r.a/rows[0].a*100;
-        r.ib=r.b/rows[0].b*100;
-        r.s=r.ia-r.ib;
-        if(i){
-          r.ra=r.a/rows[i-1].a-1;
-          r.rb=r.b/rows[i-1].b-1;
-        }
-      });
-
-      const returns=rows.slice(1);
-      const corr=cor(
-        returns.map(r=>r.ra),
-        returns.map(r=>r.rb)
-      );
-      const spreads=rows.map(r=>r.s);
-      const mean=avg(spreads),sigma=sd(spreads);
-      const latest=spreads[spreads.length-1];
-      const z=sigma?(latest-mean)/sigma:0;
-
-      $("corr").textContent=corr.toFixed(3);
-      $("days").textContent=rows.length;
-      $("spread").textContent=latest.toFixed(2);
-      $("z").textContent=z.toFixed(2);
-
-      const cv=$("cv"),ctx=cv.getContext("2d");
-      ctx.clearRect(0,0,cv.width,cv.height);
-      ctx.fillStyle="#fff";ctx.fillRect(0,0,cv.width,cv.height);
-
-      const vals=[...rows.map(r=>r.ia),...rows.map(r=>r.ib)];
-      const min=Math.min(...vals),max=Math.max(...vals);
-      const L=60,T=30,W=cv.width-80,H=cv.height-70;
-
-      [["#2563eb","ia"],["#dc2626","ib"]].forEach(([color,key])=>{
-        ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
-        rows.forEach((r,i)=>{
-          const x=L+W*i/(rows.length-1);
-          const y=T+H*(max-r[key])/(max-min||1);
-          i?ctx.lineTo(x,y):ctx.moveTo(x,y);
-        });
-        ctx.stroke();
-      });
-
-      $("status").textContent="分析完了："+A+" × "+B;
-    }catch(e){
-      $("status").textContent="分析に失敗しました："+e.message;
-      alert(e.message);
-    }
-  },50);
-});
+  const cv=$("cv"),ctx=cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.fillStyle="#fff";ctx.fillRect(0,0,cv.width,cv.height);
+  const vals=[...rows.map(r=>r.ia),...rows.map(r=>r.ib)];
+  const min=Math.min(...vals),max=Math.max(...vals),L=60,T=30,W=cv.width-80,H=cv.height-70;
+  [["#2563eb","ia"],["#dc2626","ib"]].forEach(([color,key])=>{
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+    rows.forEach((r,i)=>{
+      const x=L+W*i/(rows.length-1),y=T+H*(max-r[key])/(max-min||1);
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    });
+    ctx.stroke();
+  });
+};
 
 window.addEventListener("DOMContentLoaded",loadLatest);
 </script>
